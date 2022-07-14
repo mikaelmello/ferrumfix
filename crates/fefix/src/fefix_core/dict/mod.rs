@@ -2,6 +2,7 @@
 
 #![allow(dead_code)]
 
+mod builder;
 mod datatype;
 mod quickfix_parser;
 
@@ -12,6 +13,7 @@ use quickfix_parser::{ParseDictionaryError, QuickFixReader};
 use std::fmt;
 use std::sync::Arc;
 
+pub use builder::DictionaryBuilder;
 pub use datatype::FixDatatype;
 
 pub trait DataFieldLookup<F> {
@@ -462,85 +464,6 @@ impl Dictionary {
     }
 }
 
-struct DictionaryBuilder {
-    version: String,
-    symbol_table: FnvHashMap<Key, InternalId>,
-    abbreviations: Vec<AbbreviationData>,
-    data_types: Vec<DatatypeData>,
-    fields: Vec<FieldData>,
-    components: Vec<ComponentData>,
-    messages: Vec<MessageData>,
-    //layout_items: Vec<LayoutItemData>,
-    categories: Vec<CategoryData>,
-    header: Vec<FieldData>,
-}
-
-impl DictionaryBuilder {
-    pub fn new(version: String) -> Self {
-        Self {
-            version,
-            symbol_table: FnvHashMap::default(),
-            abbreviations: Vec::new(),
-            data_types: Vec::new(),
-            fields: Vec::new(),
-            components: Vec::new(),
-            messages: Vec::new(),
-            //layout_items: Vec::new(),
-            categories: Vec::new(),
-            header: Vec::new(),
-        }
-    }
-
-    pub fn symbol(&self, pkey: KeyRef) -> Option<&InternalId> {
-        self.symbol_table.get(&pkey as &dyn SymbolTableIndex)
-    }
-
-    pub fn add_field(&mut self, field: FieldData) -> InternalId {
-        let iid = self.fields.len() as InternalId;
-        self.symbol_table
-            .insert(Key::FieldByName(field.name.clone()), iid);
-        self.symbol_table
-            .insert(Key::FieldByTag(field.tag as u32), iid);
-        self.fields.push(field);
-        iid
-    }
-
-    pub fn add_message(&mut self, message: MessageData) -> InternalId {
-        let iid = self.messages.len() as InternalId;
-        self.symbol_table
-            .insert(Key::MessageByName(message.name.clone()), iid);
-        self.symbol_table
-            .insert(Key::MessageByMsgType(message.msg_type.to_string()), iid);
-        self.messages.push(message);
-        iid
-    }
-
-    pub fn add_component(&mut self, component: ComponentData) -> InternalId {
-        let iid = self.components.len() as InternalId;
-        self.symbol_table
-            .insert(Key::ComponentByName(component.name.to_string()), iid);
-        self.components.push(component);
-        iid
-    }
-
-    pub fn build(self) -> Dictionary {
-        Dictionary {
-            inner: Arc::new(DictionaryData {
-                version: self.version,
-                symbol_table: self.symbol_table,
-                abbreviations: self.abbreviations,
-                data_types: self.data_types,
-                fields: self.fields,
-                components: self.components,
-                messages: self.messages,
-                //layout_items: self.layout_items,
-                categories: self.categories,
-                header: self.header,
-            }),
-        }
-    }
-}
-
 #[derive(Clone, Debug)]
 struct AbbreviationData {
     abbreviation: String,
@@ -707,7 +630,7 @@ struct FieldData {
     /// The associated data field. If given, this field represents the length of
     /// the referenced data field
     pub associated_data_tag: Option<usize>,
-    pub value_restrictions: Option<Vec<FieldEnumData>>,
+    pub value_restrictions: Vec<FieldEnumData>,
     /// Abbreviated form of the Name, typically to specify the element name when
     /// the field is used in an XML message. Can be overridden by BaseCategory /
     /// BaseCategoryAbbrName.
@@ -722,22 +645,23 @@ struct FieldData {
     pub description: Option<String>,
 }
 
-impl FieldData {
-    pub fn new(name: String, tag: u32) -> Self {
-        Self {
-            name,
-            tag,
-            data_type_iid: 0,
-            associated_data_tag: None,
-            value_restrictions: None,
-            abbr_name: None,
-            base_category_id: None,
-            base_category_abbr_name: None,
-            required: false,
-            description: None,
-        }
-    }
+/// A field is the most granular message structure abstraction. It carries a
+/// specific business meaning as described by the FIX specifications. The data
+/// domain of a [`Field`] is either a [`Datatype`] or a "code set", i.e.
+/// enumeration.
+#[derive(Debug, Copy, Clone)]
+pub struct Field<'a> {
+    pub dict: &'a Dictionary,
+    pub name: &'a str,
+    pub tag: TagU32,
+    pub data_type: &'a DatatypeData,
+    pub value_restrictions: &'a [FieldEnumData],
+    pub base_category: Option<&'a CategoryData>,
+    pub required: bool,
+    pub description: Option<&'a str>,
+}
 
+impl<'a> Field<'a> {
     pub fn doc_url_onixs(&self, version: &str) -> String {
         let v = match version {
             "FIX.4.0" => "4.0",
@@ -756,6 +680,91 @@ impl FieldData {
             v,
             self.tag.to_string().as_str()
         )
+    }
+
+    pub fn is_num_in_group(&self) -> bool {
+        fn nth_char_is_uppercase(s: &str, i: usize) -> bool {
+            s.chars().nth(i).map(|c| c.is_ascii_uppercase()) == Some(true)
+        }
+
+        self.fix_datatype().base_type() == FixDatatype::NumInGroup
+            || self.name.ends_with("Len")
+            || (self.name.starts_with("No") && nth_char_is_uppercase(self.name, 2))
+    }
+
+    /// Returns the [`FixDatatype`] of `self`.
+    pub fn fix_datatype(&self) -> FixDatatype {
+        self.data_type().basetype()
+    }
+
+    /// In case this field allows any value, it returns `None`; otherwise; it
+    /// returns an [`Iterator`] of all allowed values.
+    pub fn enums(&self) -> Option<impl Iterator<Item = FieldEnum>> {
+        self.1
+            .value_restrictions
+            .as_ref()
+            .map(move |v| v.iter().map(move |f| FieldEnum(self.0, f)))
+    }
+
+    /// Returns the [`Datatype`] of `self`.
+    pub fn data_type(&self) -> Datatype {
+        let data = self
+            .0
+            .inner
+            .data_types
+            .get(self.1.data_type_iid as usize)
+            .unwrap();
+        Datatype(self.0, data)
+    }
+}
+
+impl<'a> IsFieldDefinition for Field<'a> {
+    fn name(&self) -> &str {
+        self.1.name.as_str()
+    }
+
+    fn tag(&self) -> TagU32 {
+        TagU32::new(self.1.tag).expect("Invalid FIX tag (0)")
+    }
+
+    fn location(&self) -> FieldLocation {
+        FieldLocation::Body // FIXME
+    }
+}
+
+impl FieldData {
+    pub fn new(name: String, tag: u32) -> Self {
+        Self {
+            name,
+            tag,
+            data_type_iid: 0,
+            associated_data_tag: None,
+            value_restrictions: vec![],
+            abbr_name: None,
+            base_category_id: None,
+            base_category_abbr_name: None,
+            required: false,
+            description: None,
+        }
+    }
+
+    pub fn doc_url_onixs(&self, version: &str) -> Option<String> {
+        let v = match version {
+            "FIX.4.0" => "4.0",
+            "FIX.4.1" => "4.1",
+            "FIX.4.2" => "4.2",
+            "FIX.4.3" => "4.3",
+            "FIX.4.4" => "4.4",
+            "FIX.5.0" => "5.0",
+            "FIX.5.0SP1" => "5.0.SP1",
+            "FIX.5.0SP2" => "5.0.SP2",
+            "FIXT.1.1" => "FIXT.1.1",
+            _ => return None,
+        };
+        Some(format!(
+            "https://www.onixs.biz/fix-dictionary/{}/tagNum_{}.html",
+            v, self.tag,
+        ))
     }
 
     pub fn is_num_in_group(&self) -> bool {
@@ -814,96 +823,6 @@ impl<'a> FieldEnum<'a> {
     /// Returns the documentation description for `self`.
     pub fn description(&self) -> &str {
         &self.1.description[..]
-    }
-}
-
-/// A field is the most granular message structure abstraction. It carries a
-/// specific business meaning as described by the FIX specifications. The data
-/// domain of a [`Field`] is either a [`Datatype`] or a "code set", i.e.
-/// enumeration.
-#[derive(Debug, Copy, Clone)]
-pub struct Field<'a>(&'a Dictionary, &'a FieldData);
-
-impl<'a> Field<'a> {
-    pub fn doc_url_onixs(&self, version: &str) -> String {
-        let v = match version {
-            "FIX.4.0" => "4.0",
-            "FIX.4.1" => "4.1",
-            "FIX.4.2" => "4.2",
-            "FIX.4.3" => "4.3",
-            "FIX.4.4" => "4.4",
-            "FIX.5.0" => "5.0",
-            "FIX.5.0SP1" => "5.0.SP1",
-            "FIX.5.0SP2" => "5.0.SP2",
-            "FIXT.1.1" => "FIXT.1.1",
-            s => s,
-        };
-        format!(
-            "https://www.onixs.biz/fix-dictionary/{}/tagNum_{}.html",
-            v,
-            self.1.tag.to_string().as_str()
-        )
-    }
-
-    pub fn is_num_in_group(&self) -> bool {
-        fn nth_char_is_uppercase(s: &str, i: usize) -> bool {
-            s.chars().nth(i).map(|c| c.is_ascii_uppercase()) == Some(true)
-        }
-
-        self.fix_datatype().base_type() == FixDatatype::NumInGroup
-            || self.name().ends_with("Len")
-            || (self.name().starts_with("No") && nth_char_is_uppercase(self.name(), 2))
-    }
-
-    /// Returns the [`FixDatatype`] of `self`.
-    pub fn fix_datatype(&self) -> FixDatatype {
-        self.data_type().basetype()
-    }
-
-    /// Returns the name of `self`. Field names are unique across each FIX
-    /// [`Dictionary`].
-    pub fn name(&self) -> &str {
-        self.1.name.as_str()
-    }
-
-    /// Returns the numeric tag of `self`. Field tags are unique across each FIX
-    /// [`Dictionary`].
-    pub fn tag(&self) -> TagU32 {
-        TagU32::new(self.1.tag).unwrap()
-    }
-
-    /// In case this field allows any value, it returns `None`; otherwise; it
-    /// returns an [`Iterator`] of all allowed values.
-    pub fn enums(&self) -> Option<impl Iterator<Item = FieldEnum>> {
-        self.1
-            .value_restrictions
-            .as_ref()
-            .map(move |v| v.iter().map(move |f| FieldEnum(self.0, f)))
-    }
-
-    /// Returns the [`Datatype`] of `self`.
-    pub fn data_type(&self) -> Datatype {
-        let data = self
-            .0
-            .inner
-            .data_types
-            .get(self.1.data_type_iid as usize)
-            .unwrap();
-        Datatype(self.0, data)
-    }
-}
-
-impl<'a> IsFieldDefinition for Field<'a> {
-    fn name(&self) -> &str {
-        self.1.name.as_str()
-    }
-
-    fn tag(&self) -> TagU32 {
-        TagU32::new(self.1.tag).expect("Invalid FIX tag (0)")
-    }
-
-    fn location(&self) -> FieldLocation {
-        FieldLocation::Body // FIXME
     }
 }
 
