@@ -2,7 +2,7 @@ use super::*;
 use quick_xml::de::from_str;
 use serde::Deserialize;
 use std::cmp::Ordering;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 #[derive(Debug, Deserialize)]
 struct Fix {
@@ -41,7 +41,7 @@ impl Fix {
             .cloned()
             .map(|c| (c.name.clone(), c))
             .collect();
-        let mut dependencies_by_component_name: HashMap<String, Vec<String>> = components_by_name
+        let dependencies_by_component_name: HashMap<String, Vec<String>> = components_by_name
             .iter()
             .map(|(name, c)| {
                 let mut items = c.items.clone();
@@ -56,17 +56,25 @@ impl Fix {
                 (name.clone(), dependencies)
             })
             .collect();
-        self.components.components.sort_unstable_by(|a, b| {
-            let a_deps = &dependencies_by_component_name[&a.name];
-            let b_deps = &dependencies_by_component_name[&b.name];
-            if a_deps.contains(&b.name) {
-                Ordering::Greater
-            } else if b_deps.contains(&a.name) {
-                Ordering::Less
+
+        let mut names = HashSet::new();
+        let mut components = vec![];
+        while !self.components.components.is_empty() {
+            let component = self.components.components.swap_remove(0);
+            if dependencies_by_component_name
+                .get(&component.name)
+                .unwrap()
+                .iter()
+                .all(|c_name| names.contains(c_name.as_str()))
+            {
+                names.insert(component.name.clone());
+                components.push(component);
             } else {
-                Ordering::Equal
+                self.components.components.push(component);
             }
-        });
+        }
+
+        self.components.components = components;
     }
 }
 
@@ -226,6 +234,7 @@ fn convert_items(dict: &Dictionary, items: Vec<Item>) -> Vec<LayoutItem> {
                 }
             }
             Item::Component { name, required } => {
+                println!("fetching component {}", name);
                 let component = dict.component_by_name(&name).unwrap();
                 LayoutItem {
                     required: required == 'Y',
