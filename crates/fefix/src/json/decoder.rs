@@ -132,7 +132,7 @@ where
     /// of incoming messages' fields. Configuration options are initialized via [`Default`].
     pub fn new(dict: Dictionary) -> Self {
         let mut dictionaries = HashMap::new();
-        dictionaries.insert(dict.get_version().to_string(), dict);
+        dictionaries.insert(dict.version().to_string(), dict);
         Self {
             dictionaries,
             message_builder: MessageInternal::default(),

@@ -37,7 +37,7 @@ pub fn generated_code_notice() -> String {
 
 /// Generates the Rust code for an `enum` that has variants that map 1:1 the
 /// available values for `field`.
-pub fn codegen_field_type_enum(field: dict::Field, settings: &Settings) -> String {
+pub fn codegen_field_type_enum(field: &dict::Field, settings: &Settings) -> String {
     let derives = settings.derives_for_allowed_values.join(", ");
     let attributes = settings.attributes_for_allowed_values.join("\n");
     let variants = field
@@ -56,18 +56,18 @@ pub fn codegen_field_type_enum(field: dict::Field, settings: &Settings) -> Strin
             {variants}
             }}"#
         ),
-        field_name = field.name().to_pascal_case(),
+        field_name = field.name.to_pascal_case(),
         derives = derives,
         attributes = attributes,
-        identifier = field.name().to_pascal_case(),
+        identifier = field.name.to_pascal_case(),
         variants = variants,
     )
 }
 
 fn codegen_field_type_enum_variant(allowed_value: dict::FieldEnum, settings: &Settings) -> String {
-    let mut identifier = allowed_value.description().to_pascal_case();
+    let mut identifier = allowed_value.description.to_pascal_case();
     let identifier_needs_prefix = !allowed_value
-        .description()
+        .description
         .chars()
         .next()
         .unwrap_or('_')
@@ -75,7 +75,7 @@ fn codegen_field_type_enum_variant(allowed_value: dict::FieldEnum, settings: &Se
     if identifier_needs_prefix {
         identifier = format!("_{}", identifier);
     }
-    let value_literal = allowed_value.value();
+    let value_literal = allowed_value.value;
     indent_string(
         format!(
             indoc!(
@@ -158,26 +158,26 @@ impl Default for Settings {
 /// Generates the Rust code for a FIX field definition.
 pub fn codegen_field_definition_struct(
     fix_dictionary: dict::Dictionary,
-    field: dict::Field,
+    field: &dict::Field,
 ) -> String {
     let mut header = FnvHashSet::default();
     let mut trailer = FnvHashSet::default();
-    for item in fix_dictionary
+    for item in &fix_dictionary
         .component_by_name("StandardHeader")
         .unwrap()
-        .items()
+        .layout_items
     {
-        if let dict::LayoutItemKind::Field(f) = item.kind() {
-            header.insert(f.tag());
+        if let dict::LayoutItemKind::Field(ref f) = item.kind {
+            header.insert(f.tag);
         }
     }
-    for item in fix_dictionary
+    for item in &fix_dictionary
         .component_by_name("StandardTrailer")
         .unwrap()
-        .items()
+        .layout_items
     {
-        if let dict::LayoutItemKind::Field(f) = item.kind() {
-            trailer.insert(f.tag());
+        if let dict::LayoutItemKind::Field(ref f) = item.kind {
+            trailer.insert(f.tag);
         }
     }
     gen_field_definition_with_hashsets(fix_dictionary, &header, &trailer, field)
@@ -201,15 +201,15 @@ pub fn gen_definitions(fix_dictionary: dict::Dictionary, settings: &Settings) ->
     let enums = fix_dictionary
         .iter_fields()
         .filter(|f| f.enums().is_some())
-        .map(|f| codegen_field_type_enum(f, settings))
+        .map(|f| codegen_field_type_enum(&f, settings))
         .collect::<Vec<String>>()
         .join("\n\n");
     let field_defs = fix_dictionary
         .iter_fields()
-        .map(|field| codegen_field_definition_struct(fix_dictionary.clone(), field))
+        .map(|field| codegen_field_definition_struct(fix_dictionary.clone(), &field))
         .collect::<Vec<String>>()
         .join("\n");
-    let top_comment = onixs_link_to_dictionary(fix_dictionary.get_version()).unwrap_or_default();
+    let top_comment = onixs_link_to_dictionary(fix_dictionary.version()).unwrap_or_default();
     let code = format!(
         indoc!(
             r#"
@@ -246,11 +246,11 @@ fn indent_string(s: &str, prefix: &str) -> String {
     })
 }
 
-fn onixs_link_to_field(fix_version: &str, field: dict::Field) -> Option<String> {
+fn onixs_link_to_field(fix_version: &str, field: &dict::Field) -> Option<String> {
     Some(format!(
         "https://www.onixs.biz/fix-dictionary/{}/tagnum_{}.html",
         onixs_dictionary_id(fix_version)?,
-        field.tag().get()
+        field.tag
     ))
 }
 
@@ -280,18 +280,18 @@ fn gen_field_definition_with_hashsets(
     fix_dictionary: dict::Dictionary,
     header_tags: &FnvHashSet<TagU32>,
     trailer_tags: &FnvHashSet<TagU32>,
-    field: dict::Field,
+    field: &dict::Field,
 ) -> String {
-    let name = field.name().to_shouty_snake_case();
-    let tag = field.tag().to_string();
-    let field_location = if header_tags.contains(&field.tag()) {
+    let name = field.name.to_shouty_snake_case();
+    let tag = field.tag.to_string();
+    let field_location = if header_tags.contains(&field.tag) {
         "Header"
-    } else if trailer_tags.contains(&field.tag()) {
+    } else if trailer_tags.contains(&field.tag) {
         "Trailer"
     } else {
         "Body"
     };
-    let doc_link = onixs_link_to_field(fix_dictionary.get_version(), field);
+    let doc_link = onixs_link_to_field(fix_dictionary.version(), field);
     let doc = if let Some(doc_link) = doc_link {
         format!(
             "/// Field attributes for [`{} <{}>`]({}).",
@@ -308,16 +308,15 @@ fn gen_field_definition_with_hashsets(
                 pub const {identifier}: &HardCodedFixFieldDefinition = &HardCodedFixFieldDefinition {{
                     name: "{name}",
                     tag: {tag},
-                    data_type: FixDatatype::{data_type},
+                    data_type: FixDatatype::String, // FIXME
                     location: FieldLocation::{field_location},
                 }};"#
         ),
         doc = doc,
         identifier = name,
-        name = field.name(),
+        name = field.name,
         tag = tag,
         field_location = field_location,
-        data_type = <&'static str as From<dict::FixDatatype>>::from(field.data_type().basetype()),
     )
 }
 

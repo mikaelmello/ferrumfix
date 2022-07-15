@@ -9,11 +9,11 @@ mod types;
 
 use super::TagU32;
 use fnv::FnvHashMap;
-use std::fmt;
 use std::sync::Arc;
+use std::{fmt, rc::Rc};
 
 pub use datatype::FixDatatype;
-pub use quickfix_parser::{ParseDictionaryError, QuickFixReader};
+pub use quickfix_parser::parse_quickfix_xml;
 pub use types::*;
 
 pub trait DataFieldLookup<F> {
@@ -22,26 +22,6 @@ pub trait DataFieldLookup<F> {
 
 pub trait NumInGroupLookup<F> {
     fn field_is_num_in_group(&self, field: F) -> bool;
-}
-
-impl DataFieldLookup<u32> for Dictionary {
-    fn field_is_data(&self, tag: u32) -> bool {
-        if let Some(field) = self.field_by_tag(tag) {
-            field.data_type().basetype() == FixDatatype::Data
-        } else {
-            false
-        }
-    }
-}
-
-impl NumInGroupLookup<u32> for Dictionary {
-    fn field_is_num_in_group(&self, tag: u32) -> bool {
-        if let Some(field) = self.field_by_tag(tag) {
-            field.data_type().basetype() == FixDatatype::NumInGroup
-        } else {
-            false
-        }
-    }
 }
 
 /// A mapping from FIX version strings to [`Dictionary`] values.
@@ -67,22 +47,21 @@ pub type Dictionaries = Arc<FnvHashMap<String, Arc<Dictionary>>>;
 pub struct Dictionary {
     version: String,
 
-    abbreviations: Vec<AbbreviationData>,
-    data_types: Vec<DatatypeData>,
-    fields: Vec<FieldData>,
-    components: Vec<ComponentData>,
-    messages: Vec<MessageData>,
-    //layout_items: Vec<LayoutItemData>,
-    categories: Vec<CategoryData>,
-    header: Vec<FieldData>,
+    abbreviations: Vec<Rc<Abbreviation>>,
+    datatypes: Vec<Rc<Datatype>>,
+    fields: Vec<Rc<Field>>,
+    components: Vec<Rc<Component>>,
+    messages: Vec<Rc<Message>>,
+    categories: Vec<Rc<Category>>,
+    header: Vec<Rc<Field>>,
 
-    fields_by_tag: FnvHashMap<TagU32, InternalId>,
-    fields_by_name: FnvHashMap<String, InternalId>,
-    messages_by_name: FnvHashMap<String, InternalId>,
-    messages_by_msg_type: FnvHashMap<String, InternalId>,
-    components_by_name: FnvHashMap<String, InternalId>,
-    datatypes_by_name: FnvHashMap<String, InternalId>,
-    abbreviations_by_name: FnvHashMap<String, InternalId>,
+    fields_by_tag: FnvHashMap<TagU32, Rc<Field>>,
+    fields_by_name: FnvHashMap<String, Rc<Field>>,
+    messages_by_name: FnvHashMap<String, Rc<Message>>,
+    messages_by_msg_type: FnvHashMap<String, Rc<Message>>,
+    components_by_name: FnvHashMap<String, Rc<Component>>,
+    datatypes_by_name: FnvHashMap<String, Rc<Datatype>>,
+    abbreviations_by_name: FnvHashMap<String, Rc<Abbreviation>>,
 }
 
 impl Dictionary {
@@ -91,7 +70,7 @@ impl Dictionary {
         Dictionary {
             version: version.to_string(),
             abbreviations: Vec::new(),
-            data_types: Vec::new(),
+            datatypes: Vec::new(),
             fields: Vec::new(),
             components: Vec::new(),
             messages: Vec::new(),
@@ -106,14 +85,6 @@ impl Dictionary {
             datatypes_by_name: FnvHashMap::default(),
             abbreviations_by_name: FnvHashMap::default(),
         }
-    }
-
-    /// Attempts to read a QuickFIX-style specification file and convert it into
-    /// a [`Dictionary`].
-    pub fn from_quickfix_spec<S: AsRef<str>>(input: S) -> Result<Self, ParseDictionaryError> {
-        let xml_document = roxmltree::Document::parse(input.as_ref())
-            .map_err(|_| ParseDictionaryError::InvalidFormat)?;
-        QuickFixReader::new(&xml_document)
     }
 
     /// Returns the version string associated with this [`Dictionary`] (e.g.
@@ -134,7 +105,7 @@ impl Dictionary {
     #[cfg_attr(doc_cfg, doc(cfg(feature = "fix40")))]
     pub fn fix40() -> Self {
         let spec = include_str!("resources/quickfix/FIX-4.0.xml");
-        Dictionary::from_quickfix_spec(spec).unwrap()
+        parse_quickfix_xml(spec).unwrap()
     }
 
     /// Creates a new [`Dictionary`] for FIX 4.1.
@@ -142,7 +113,7 @@ impl Dictionary {
     #[cfg_attr(doc_cfg, doc(cfg(feature = "fix41")))]
     pub fn fix41() -> Self {
         let spec = include_str!("resources/quickfix/FIX-4.1.xml");
-        Dictionary::from_quickfix_spec(spec).unwrap()
+        parse_quickfix_xml(spec).unwrap()
     }
 
     /// Creates a new [`Dictionary`] for FIX 4.2.
@@ -150,7 +121,7 @@ impl Dictionary {
     #[cfg_attr(doc_cfg, doc(cfg(feature = "fix42")))]
     pub fn fix42() -> Self {
         let spec = include_str!("resources/quickfix/FIX-4.2.xml");
-        Dictionary::from_quickfix_spec(spec).unwrap()
+        parse_quickfix_xml(spec).unwrap()
     }
 
     /// Creates a new [`Dictionary`] for FIX 4.3.
@@ -158,13 +129,13 @@ impl Dictionary {
     #[cfg_attr(doc_cfg, doc(cfg(feature = "fix43")))]
     pub fn fix43() -> Self {
         let spec = include_str!("resources/quickfix/FIX-4.3.xml");
-        Dictionary::from_quickfix_spec(spec).unwrap()
+        parse_quickfix_xml(spec).unwrap()
     }
 
     /// Creates a new [`Dictionary`] for FIX 4.4.
     pub fn fix44() -> Self {
         let spec = include_str!("resources/quickfix/FIX-4.4.xml");
-        Dictionary::from_quickfix_spec(spec).unwrap()
+        parse_quickfix_xml(spec).unwrap()
     }
 
     /// Creates a new [`Dictionary`] for FIX 5.0.
@@ -172,7 +143,7 @@ impl Dictionary {
     #[cfg_attr(doc_cfg, doc(cfg(feature = "fix50")))]
     pub fn fix50() -> Self {
         let spec = include_str!("resources/quickfix/FIX-5.0.xml");
-        Dictionary::from_quickfix_spec(spec).unwrap()
+        parse_quickfix_xml(spec).unwrap()
     }
 
     /// Creates a new [`Dictionary`] for FIX 5.0 SP1.
@@ -180,7 +151,7 @@ impl Dictionary {
     #[cfg_attr(doc_cfg, doc(cfg(feature = "fix50sp1")))]
     pub fn fix50sp1() -> Self {
         let spec = include_str!("resources/quickfix/FIX-5.0-SP1.xml");
-        Dictionary::from_quickfix_spec(spec).unwrap()
+        parse_quickfix_xml(spec).unwrap()
     }
 
     /// Creates a new [`Dictionary`] for FIX 5.0 SP2.
@@ -188,7 +159,7 @@ impl Dictionary {
     #[cfg_attr(doc_cfg, doc(cfg(feature = "fix50sp1")))]
     pub fn fix50sp2() -> Self {
         let spec = include_str!("resources/quickfix/FIX-5.0-SP2.xml");
-        Dictionary::from_quickfix_spec(spec).unwrap()
+        parse_quickfix_xml(spec).unwrap()
     }
 
     /// Creates a new [`Dictionary`] for FIXT 1.1.
@@ -196,7 +167,7 @@ impl Dictionary {
     #[cfg_attr(doc_cfg, doc(cfg(feature = "fixt11")))]
     pub fn fixt11() -> Self {
         let spec = include_str!("resources/quickfix/FIXT-1.1.xml");
-        Dictionary::from_quickfix_spec(spec).unwrap()
+        parse_quickfix_xml(spec).unwrap()
     }
 
     #[cfg(test)]
@@ -222,35 +193,44 @@ impl Dictionary {
         ]
     }
 
-    pub fn add_field(&mut self, field: FieldData) -> InternalId {
-        let iid = self.fields.len() as InternalId;
-        self.fields_by_name.insert(field.name.clone(), iid);
-        self.fields_by_tag.insert(field.tag, iid);
-        self.fields.push(field);
-        iid
+    pub fn add_field(&mut self, field: Field) -> Rc<Field> {
+        let field = Rc::new(field);
+        self.fields_by_name
+            .insert(field.name.clone(), field.clone());
+        self.fields_by_tag.insert(field.tag, field.clone());
+        self.fields.push(field.clone());
+        field
     }
 
-    pub fn add_message(&mut self, message: MessageData) -> InternalId {
-        let iid = self.messages.len() as InternalId;
-        self.messages_by_name.insert(message.name.clone(), iid);
+    pub fn add_message(&mut self, message: Message) -> Rc<Message> {
+        let message = Rc::new(message);
+        self.messages_by_name
+            .insert(message.name.clone(), message.clone());
         self.messages_by_msg_type
-            .insert(message.msg_type.clone(), iid);
-        self.messages.push(message);
-        iid
+            .insert(message.msg_type.clone(), message.clone());
+        self.messages.push(message.clone());
+        message
     }
 
-    pub fn add_component(&mut self, component: ComponentData) -> InternalId {
-        let iid = self.components.len() as InternalId;
-        self.components_by_name.insert(component.name.clone(), iid);
-        self.components.push(component);
-        iid
+    pub fn add_datatype(&mut self, dt: Datatype) -> Rc<Datatype> {
+        let dt = Rc::new(dt);
+        self.datatypes_by_name.insert(dt.name.clone(), dt.clone());
+        self.datatypes.push(dt.clone());
+        dt
+    }
+
+    pub fn add_component(&mut self, component: Component) -> Rc<Component> {
+        let component = Rc::new(component);
+        self.components_by_name
+            .insert(component.name.clone(), component.clone());
+        self.components.push(component.clone());
+        component
     }
 
     /// Return the known abbreviation for `term` -if any- according to the
     /// documentation of this FIX Dictionary.
-    pub fn abbreviation_for(&self, term: &str) -> Option<Abbreviation> {
-        let id = self.abbreviations_by_name.get(term)?;
-        Some(Abbreviation(self, &self.abbreviations[*id as usize]))
+    pub fn abbreviation_for(&self, term: &str) -> Option<Rc<Abbreviation>> {
+        self.abbreviations_by_name.get(term).cloned()
     }
 
     /// Returns the [`Message`](Message) associated with `name`, if any.
@@ -264,9 +244,8 @@ impl Dictionary {
     /// let msg2 = dict.message_by_msgtype("0").unwrap();
     /// assert_eq!(msg1.name(), msg2.name());
     /// ```
-    pub fn message_by_name(&self, name: &str) -> Option<Message> {
-        let id = self.messages_by_name.get(name)?;
-        Some(Message(self, &self.messages[*id as usize]))
+    pub fn message_by_name(&self, name: &str) -> Option<Rc<Message>> {
+        self.messages_by_name.get(name).cloned()
     }
 
     /// Returns the [`Message`](Message) that has the given `msgtype`, if any.
@@ -280,15 +259,13 @@ impl Dictionary {
     /// let msg2 = dict.message_by_name("Heartbeat").unwrap();
     /// assert_eq!(msg1.name(), msg2.name());
     /// ```
-    pub fn message_by_msgtype(&self, msgtype: &str) -> Option<Message> {
-        let id = self.messages_by_msg_type.get(msgtype)?;
-        Some(Message(self, &self.messages[*id as usize]))
+    pub fn message_by_msgtype(&self, msgtype: &str) -> Option<Rc<Message>> {
+        self.messages_by_msg_type.get(msgtype).cloned()
     }
 
     /// Returns the [`Component`] named `name`, if any.
-    pub fn component_by_name(&self, name: &str) -> Option<Component> {
-        let id = self.components_by_name.get(name)?;
-        Some(Component(self, &self.components[*id as usize]))
+    pub fn component_by_name(&self, name: &str) -> Option<Rc<Component>> {
+        self.components_by_name.get(name).cloned()
     }
 
     /// Returns the [`Datatype`] named `name`, if any.
@@ -300,9 +277,8 @@ impl Dictionary {
     /// let dt = dict.datatype_by_name("String").unwrap();
     /// assert_eq!(dt.name(), "String");
     /// ```
-    pub fn datatype_by_name(&self, name: &str) -> Option<Datatype> {
-        let id = self.datatypes_by_name.get(name)?;
-        Some(Datatype(self, &self.data_types[*id as usize]))
+    pub fn datatype_by_name(&self, name: &str) -> Option<Rc<Datatype>> {
+        self.datatypes_by_name.get(name).cloned()
     }
 
     /// Returns the [`Field`] associated with `tag`, if any.
@@ -315,15 +291,13 @@ impl Dictionary {
     /// let field2 = dict.field_by_name("TestReqID").unwrap();
     /// assert_eq!(field1.name(), field2.name());
     /// ```
-    pub fn field_by_tag(&self, tag: u32) -> Option<Field> {
-        let id = self.fields_by_tag.get(&TagU32::new(tag)?)?;
-        Some(Field(self, &self.fields[*id as usize]))
+    pub fn field_by_tag(&self, tag: u32) -> Option<Rc<Field>> {
+        Some(self.fields_by_tag.get(&TagU32::new(tag)?)?.clone())
     }
 
     /// Returns the [`Field`] named `name`, if any.
-    pub fn field_by_name(&self, name: &str) -> Option<Field> {
-        let id = self.fields_by_name.get(name)?;
-        Some(Field(self, &self.fields[*id as usize]))
+    pub fn field_by_name(&self, name: &str) -> Option<Rc<Field>> {
+        self.fields_by_name.get(name).cloned()
     }
 
     /// Returns an [`Iterator`] over all [`Datatype`] defined
@@ -336,8 +310,8 @@ impl Dictionary {
     /// // FIX 4.4 defines 23 (FIXME) datatypes.
     /// assert_eq!(dict.iter_datatypes().count(), 23);
     /// ```
-    pub fn iter_datatypes(&self) -> impl Iterator<Item = Datatype> {
-        self.data_types.iter().map(move |data| Datatype(self, data))
+    pub fn iter_datatypes(&self) -> impl Iterator<Item = Rc<Datatype>> + '_ {
+        self.datatypes.iter().cloned()
     }
 
     /// Returns an [`Iterator`] over this [`Dictionary`]'s messages. Items are in
@@ -350,28 +324,26 @@ impl Dictionary {
     /// let msg = dict.iter_messages().find(|m| m.name() == "MarketDataRequest");
     /// assert_eq!(msg.unwrap().msg_type(), "V");
     /// ```
-    pub fn iter_messages(&self) -> impl Iterator<Item = Message> {
-        self.messages.iter().map(move |data| Message(self, data))
+    pub fn iter_messages(&self) -> impl Iterator<Item = Rc<Message>> + '_ {
+        self.messages.iter().cloned()
     }
 
     /// Returns an [`Iterator`] over this [`Dictionary`]'s categories. Items are
     /// in no particular order.
-    pub fn iter_categories(&self) -> impl Iterator<Item = Category> {
-        self.categories.iter().map(move |data| Category(self, data))
+    pub fn iter_categories(&self) -> impl Iterator<Item = Rc<Category>> + '_ {
+        self.categories.iter().cloned()
     }
 
     /// Returns an [`Iterator`] over this [`Dictionary`]'s fields. Items are
     /// in no particular order.
-    pub fn iter_fields(&self) -> impl Iterator<Item = Field> {
-        self.fields.iter().map(move |data| Field(self, data))
+    pub fn iter_fields(&self) -> impl Iterator<Item = Rc<Field>> + '_ {
+        self.fields.iter().cloned()
     }
 
     /// Returns an [`Iterator`] over this [`Dictionary`]'s components. Items are in
     /// no particular order.
-    pub fn iter_components(&self) -> impl Iterator<Item = Component> {
-        self.components
-            .iter()
-            .map(move |data| Component(self, data))
+    pub fn iter_components(&self) -> impl Iterator<Item = Rc<Component>> + '_ {
+        self.components.iter().cloned()
     }
 }
 

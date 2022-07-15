@@ -1,384 +1,240 @@
 use super::*;
 use quick_xml::de::from_str;
 use serde::Deserialize;
+use std::cmp::Ordering;
+use std::collections::HashMap;
 
 #[derive(Debug, Deserialize)]
-pub struct Fix {
+struct Fix {
     r#type: String,
     major: String,
     minor: String,
     servicepack: String,
-    header: Vec<Field>,
-    trailer: Vec<Field>,
+    header: Header,
+    trailer: Trailer,
+    messages: Messages,
+    components: Components,
+    fields: Fields,
+}
+
+impl Fix {
+    fn version(&self) -> String {
+        format!(
+            "{}.{}.{}{}",
+            self.r#type,
+            self.major,
+            self.minor,
+            // Omit Service Pack ID if set to zero.
+            if self.servicepack != "0" {
+                format!("-SP{}", self.servicepack)
+            } else {
+                String::new()
+            }
+        )
+    }
+
+    fn sort_components_by_dependency_order(&mut self) {
+        let components_by_name: HashMap<String, Component> = self
+            .components
+            .components
+            .iter()
+            .cloned()
+            .map(|c| (c.name.clone(), c))
+            .collect();
+        let mut dependencies_by_component_name: HashMap<String, Vec<String>> = components_by_name
+            .iter()
+            .map(|(name, c)| {
+                let mut items = c.items.clone();
+                let mut dependencies = Vec::new();
+                while let Some(item) = items.pop() {
+                    match item {
+                        Item::Field { .. } => (),
+                        Item::Group { items: i, .. } => items.extend_from_slice(&i),
+                        Item::Component { name, .. } => dependencies.push(name),
+                    }
+                }
+                (name.clone(), dependencies)
+            })
+            .collect();
+        self.components.components.sort_unstable_by(|a, b| {
+            let a_deps = &dependencies_by_component_name[&a.name];
+            let b_deps = &dependencies_by_component_name[&b.name];
+            if a_deps.contains(&b.name) {
+                Ordering::Greater
+            } else if b_deps.contains(&a.name) {
+                Ordering::Less
+            } else {
+                Ordering::Equal
+            }
+        });
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum Item {
+    Field {
+        name: String,
+        required: char,
+    },
+    Group {
+        name: String,
+        required: char,
+        #[serde(default, rename = "$value")]
+        items: Vec<Item>,
+    },
+    Component {
+        name: String,
+        required: char,
+    },
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct Fields {
+    #[serde(default, rename = "field")]
+    fields: Vec<Field>,
+}
+
+#[derive(Debug, Deserialize)]
+struct Messages {
+    #[serde(default, rename = "message")]
     messages: Vec<Message>,
+}
+
+#[derive(Debug, Deserialize)]
+struct Components {
+    #[serde(default, rename = "component")]
     components: Vec<Component>,
-    fields: Vec<Field>,
 }
 
 #[derive(Debug, Deserialize)]
-pub struct Component {
+struct Trailer {
+    #[serde(default, rename = "$value")]
+    children: Vec<Item>,
+}
+
+#[derive(Debug, Deserialize)]
+struct Header {
+    #[serde(default, rename = "$value")]
+    children: Vec<Item>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct Component {
     name: String,
-    fields: Vec<Field>,
+    #[serde(default, rename = "$value")]
+    items: Vec<Item>,
 }
 
-#[derive(Debug, Deserialize)]
-pub struct Field {
+#[derive(Debug, Clone, Deserialize)]
+struct Field {
+    number: TagU32,
     name: String,
-    required: bool,
+    #[serde(rename = "type")]
+    datatype: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct FieldRef {
+    name: String,
+    required: char,
 }
 
 #[derive(Debug, Deserialize)]
-pub struct Message {
+struct Message {
     name: String,
     msgtype: String,
     msgcat: Option<String>,
 }
 
-pub fn from_quickfix_xml(xml_document: &str) -> ParseResult<Dictionary> {
+/// Attempts to read a QuickFIX-style specification file and convert it into
+/// a [`Dictionary`].
+pub fn parse_quickfix_xml(xml_document: &str) -> Result<Dictionary, quick_xml::DeError> {
     let mut fix: Fix = from_str(xml_document).unwrap();
+    let mut dict = Dictionary::new(&fix.version());
 
-    let version = format!(
-        "{}.{}.{}{}",
-        fix.r#type,
-        fix.major,
-        fix.minor,
-        // Omit Service Pack ID if set to zero.
-        if fix.servicepack != "0" {
-            format!("-SP{}", fix.servicepack)
-        } else {
-            String::new()
+    // Import datatypes.
+    for f in &fix.fields.fields {
+        if dict.datatype_by_name(&f.datatype).is_none() {
+            let dt = Datatype::new(f.datatype.clone());
+            dict.add_datatype(dt);
         }
-    );
-    let mut dict = Dictionary::new(version.as_str());
-    for field in fix.fields {
-        let 
-        dict.add_field(FieldData {
-            name: (),
-            tag: (),
-            data_type_iid: (),
-            associated_data_tag: (),
-            value_restrictions: (),
-            abbr_name: (),
-            base_category_id: (),
-            base_category_abbr_name: (),
-            required: (),
-            description: (),
-        });
     }
 
-    // TODO...
+    // Import fields.
+    for f in &fix.fields.fields {
+        let datatype = dict.datatype_by_name(&f.datatype).unwrap();
+        let field = types::Field::new(f.name.clone(), f.number, datatype);
+        dict.add_field(field);
+    }
+
+    // Create a dependency graph of components. This is necessary to import them in the correct
+    // order.
+    fix.sort_components_by_dependency_order();
+    // Import components.
+    for c in fix.components.components {
+        println!("component {}", c.name);
+        let mut component = types::Component::new(0, c.name, 0);
+        component.layout_items = convert_items(&dict, c.items);
+        dict.add_component(component);
+    }
+
+    // Import messages.
+    for m in fix.messages.messages {
+        let message = types::Message::new(m.msgtype, m.name);
+        dict.add_message(message);
+    }
+
+    // Import header.
+    let mut header = types::Component::new(0, "StandardHeader".to_string(), 0);
+    header.layout_items = convert_items(&dict, fix.header.children);
+    dict.add_component(header);
+
+    // Import trailer.
+    let mut trailer = types::Component::new(0, "StandardTrailer".to_string(), 0);
+    trailer.layout_items = convert_items(&dict, fix.trailer.children);
+    dict.add_component(trailer);
+
     Ok(dict)
 }
 
-pub struct QuickFixReader<'a> {
-    node_with_header: roxmltree::Node<'a, 'a>,
-    node_with_trailer: roxmltree::Node<'a, 'a>,
-    node_with_components: roxmltree::Node<'a, 'a>,
-    node_with_messages: roxmltree::Node<'a, 'a>,
-    node_with_fields: roxmltree::Node<'a, 'a>,
-    builder: Dictionary,
-}
+fn convert_items(dict: &Dictionary, items: Vec<Item>) -> Vec<LayoutItem> {
+    let mut layout = vec![];
 
-impl<'a> QuickFixReader<'a> {
-    pub fn new(xml_document: &'a roxmltree::Document<'a>) -> ParseResult<Dictionary> {
-        let mut reader = Self::empty(xml_document)?;
-        for child in reader.node_with_fields.children() {
-            if child.is_element() {
-                import_field(&mut reader.builder, child)?;
+    for item in items {
+        let item = match item {
+            Item::Field { name, required } => {
+                let field = dict.field_by_name(&name).unwrap();
+                LayoutItem {
+                    required: required == 'Y',
+                    kind: LayoutItemKind::Field(field),
+                }
             }
-        }
-        for child in reader.node_with_components.children() {
-            if child.is_element() {
-                let name = child
-                    .attribute("name")
-                    .ok_or(ParseDictionaryError::InvalidFormat)?
-                    .to_string();
-                import_component(&mut reader.builder, child, name)?;
-            }
-        }
-        for child in reader.node_with_messages.children() {
-            if child.is_element() {
-                import_message(&mut reader.builder, child)?;
-            }
-        }
-        // `StandardHeader` and `StandardTrailer` are defined in ad-hoc
-        // sections of the XML files. They're always there, even if
-        // potentially empty (e.g. FIX 5.0+).
-        import_component(
-            &mut reader.builder,
-            reader.node_with_header,
-            "StandardHeader",
-        )?;
-        import_component(
-            &mut reader.builder,
-            reader.node_with_trailer,
-            "StandardTrailer",
-        )?;
-        Ok(reader.builder.build())
-    }
-
-    fn empty(xml_document: &'a roxmltree::Document<'a>) -> ParseResult<Self> {
-        let root = xml_document.root_element();
-        let find_tagged_child = |tag: &str| {
-            root.children()
-                .find(|n| n.has_tag_name(tag))
-                .ok_or_else(|| {
-                    ParseDictionaryError::InvalidData(format!("<{}> tag not found", tag))
-                })
-        };
-        let version_type = root
-            .attribute("type")
-            .ok_or(ParseDictionaryError::InvalidData(
-                "No version attribute.".to_string(),
-            ))?;
-        let version_major = root
-            .attribute("major")
-            .ok_or(ParseDictionaryError::InvalidData(
-                "No major version attribute.".to_string(),
-            ))?;
-        let version_minor = root
-            .attribute("minor")
-            .ok_or(ParseDictionaryError::InvalidData(
-                "No minor version attribute.".to_string(),
-            ))?;
-        let version_sp = root.attribute("servicepack").unwrap_or("0");
-        let version = format!(
-            "{}.{}.{}{}",
-            version_type,
-            version_major,
-            version_minor,
-            // Omit Service Pack ID if set to zero.
-            if version_sp != "0" {
-                format!("-SP{}", version_sp)
-            } else {
-                String::new()
-            }
-        );
-        Ok(QuickFixReader {
-            builder: Dictionary::new(version),
-            node_with_header: find_tagged_child("header")?,
-            node_with_trailer: find_tagged_child("trailer")?,
-            node_with_messages: find_tagged_child("messages")?,
-            node_with_components: find_tagged_child("components")?,
-            node_with_fields: find_tagged_child("fields")?,
-        })
-    }
-}
-
-fn import_field(builder: &mut Dictionary, node: roxmltree::Node) -> ParseResult<InternalId> {
-    if node.tag_name().name() != "field" {
-        return Err(ParseDictionaryError::InvalidFormat);
-    }
-    let data_type_iid = import_datatype(builder, node);
-    let value_restrictions = value_restrictions_from_node(node, data_type_iid);
-    let name = node
-        .attribute("name")
-        .ok_or(ParseDictionaryError::InvalidFormat)?
-        .to_string();
-    let tag = node
-        .attribute("number")
-        .ok_or(ParseDictionaryError::InvalidFormat)?
-        .parse()
-        .map_err(|_| ParseDictionaryError::InvalidFormat)?;
-    let field = FieldData {
-        name,
-        tag,
-        data_type_iid,
-        associated_data_tag: None,
-        value_restrictions,
-        required: true,
-        abbr_name: None,
-        base_category_abbr_name: None,
-        base_category_id: None,
-        description: None,
-    };
-    Ok(builder.add_field(field))
-}
-
-fn import_message(builder: &mut Dictionary, node: roxmltree::Node) -> ParseResult<InternalId> {
-    debug_assert_eq!(node.tag_name().name(), "message");
-    let category_iid = import_category(builder, node)?;
-    let mut layout_items = LayoutItems::new();
-    for child in node.children() {
-        if child.is_element() {
-            // We don't need to generate new IID's because we're dealing
-            // with ranges.
-            layout_items.push(import_layout_item(builder, child)?);
-        }
-    }
-    let message = MessageData {
-        name: node
-            .attribute("name")
-            .ok_or(ParseDictionaryError::InvalidFormat)?
-            .to_string(),
-        msg_type: node
-            .attribute("msgtype")
-            .ok_or(ParseDictionaryError::InvalidFormat)?
-            .to_string(),
-        component_id: 0,
-        category_iid,
-        section_id: String::new(),
-        layout_items,
-        abbr_name: None,
-        required: true,
-        elaboration: None,
-        description: String::new(),
-    };
-    Ok(builder.add_message(message))
-}
-
-fn import_component<S: AsRef<str>>(
-    builder: &mut Dictionary,
-    node: roxmltree::Node,
-    name: S,
-) -> ParseResult<InternalId> {
-    let mut layout_items = LayoutItems::new();
-    for child in node.children() {
-        if child.is_element() {
-            layout_items.push(import_layout_item(builder, child)?);
-        }
-    }
-    let component = ComponentData {
-        id: 0,
-        component_type: FixmlComponentAttributes::Block {
-            // FIXME
-            is_implicit: false,
-            is_repeating: false,
-            is_optimized: false,
-        },
-        layout_items,
-        category_iid: 0, // FIXME
-        name: name.as_ref().to_string(),
-        abbr_name: None,
-    };
-    let iid = builder.add_component(component);
-    match builder.symbol(KeyRef::ComponentByName(name.as_ref())) {
-        Some(x) => Ok(*x),
-        None => {
-            builder
-                .symbol_table
-                .insert(Key::ComponentByName(name.as_ref().to_string()), iid);
-            Ok(iid)
-        }
-    }
-}
-
-fn import_datatype(builder: &mut Dictionary, node: roxmltree::Node) -> InternalId {
-    // References should only happen at <field> tags.
-    debug_assert_eq!(node.tag_name().name(), "field");
-    let datatype = {
-        // The idenfier that QuickFIX uses for this type.
-        let quickfix_name = node.attribute("type").unwrap();
-        // Translate that into a real datatype.
-        FixDatatype::from_quickfix_name(quickfix_name).unwrap()
-    };
-    // Get the official (not QuickFIX's) name of `datatype`.
-    let name = datatype.name();
-    match builder.symbol(KeyRef::DatatypeByName(name)) {
-        Some(x) => *x,
-        None => {
-            let iid = builder.data_types.len() as u32;
-            let data = DatatypeData {
-                datatype,
-                description: String::new(),
-                examples: Vec::new(),
-            };
-            builder.data_types.push(data);
-            builder
-                .symbol_table
-                .insert(Key::DatatypeByName(name.to_string()), iid);
-            iid
-        }
-    }
-}
-
-fn value_restrictions_from_node(
-    node: roxmltree::Node,
-    _datatype: InternalId,
-) -> Option<Vec<FieldEnumData>> {
-    let mut values = Vec::new();
-    for child in node.children() {
-        if child.is_element() {
-            let variant = child.attribute("enum").unwrap().to_string();
-            let description = child.attribute("description").unwrap().to_string();
-            let enum_value = FieldEnumData {
-                value: variant,
-                description,
-            };
-            values.push(enum_value);
-        }
-    }
-    if values.is_empty() {
-        None
-    } else {
-        Some(values)
-    }
-}
-
-fn import_layout_item(
-    builder: &mut Dictionary,
-    node: roxmltree::Node,
-) -> ParseResult<LayoutItemData> {
-    // This processing step requires on fields being already present in
-    // the dictionary.
-    debug_assert_ne!(builder.fields.len(), 0);
-    let name = node.attribute("name").unwrap();
-    let required = node.attribute("required").unwrap() == "Y";
-    let tag = node.tag_name().name();
-    let kind = match tag {
-        "field" => {
-            let field_iid = builder.symbol(KeyRef::FieldByName(name)).unwrap();
-            LayoutItemKindData::Field { iid: *field_iid }
-        }
-        "component" => {
-            // Components may *not* be already present.
-            let component_iid = import_component(builder, node, name)?;
-            LayoutItemKindData::Component { iid: component_iid }
-        }
-        "group" => {
-            let len_field_iid = *builder.symbol(KeyRef::FieldByName(name)).unwrap();
-            let mut items = Vec::new();
-            for child in node.children().filter(|n| n.is_element()) {
-                items.push(import_layout_item(builder, child)?);
-            }
-            LayoutItemKindData::Group {
-                len_field_iid,
+            Item::Group {
+                name,
+                required,
                 items,
+            } => {
+                let first_field = dict.field_by_name(&name).unwrap();
+                let contents = convert_items(dict, items);
+                LayoutItem {
+                    required: required == 'Y',
+                    kind: LayoutItemKind::Group {
+                        first_field,
+                        contents,
+                    },
+                }
             }
-        }
-        _ => {
-            return Err(ParseDictionaryError::InvalidFormat);
-        }
-    };
-    let item = LayoutItemData { required, kind };
-    Ok(item)
-}
+            Item::Component { name, required } => {
+                let component = dict.component_by_name(&name).unwrap();
+                LayoutItem {
+                    required: required == 'Y',
+                    kind: LayoutItemKind::Component(component),
+                }
+            }
+        };
+        layout.push(item);
+    }
 
-fn import_category(builder: &mut Dictionary, node: roxmltree::Node) -> ParseResult<InternalId> {
-    debug_assert_eq!(node.tag_name().name(), "message");
-    let name = node.attribute("msgcat").ok_or(ParseError::InvalidFormat)?;
-    Ok(match builder.symbol(KeyRef::CategoryByName(name)) {
-        Some(x) => *x,
-        None => {
-            let iid = builder.categories.len() as u32;
-            builder.categories.push(CategoryData {
-                name: name.to_string(),
-                fixml_filename: String::new(),
-            });
-            builder
-                .symbol_table
-                .insert(Key::CategoryByName(name.to_string()), iid);
-            iid
-        }
-    })
-}
-
-type ParseError = ParseDictionaryError;
-type ParseResult<T> = Result<T, ParseError>;
-
-/// The error type that can arise when decoding a QuickFIX Dictionary.
-#[derive(Clone, Debug)]
-pub enum ParseDictionaryError {
-    InvalidFormat,
-    InvalidData(String),
+    layout
 }
