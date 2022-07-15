@@ -111,7 +111,6 @@ pub mod definitions;
 pub mod field_types;
 pub mod prelude;
 pub mod session;
-pub use field_access::{FieldMap, GroupEntries, RepeatingGroup};
 pub mod tagvalue;
 
 #[cfg(feature = "json-encoding")]
@@ -125,6 +124,7 @@ pub use buffer::{Buffer, BufferWriter};
 pub use dict::Dictionary;
 pub use fefix_core::dict;
 pub use fefix_core::TagU32;
+pub use field_access::{FieldMap, GroupEntries, RepeatingGroup};
 
 // We don't show derive macros to pollute the docs.
 #[doc(hidden)]

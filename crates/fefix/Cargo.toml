@@ -83,8 +83,7 @@ indoc = { version = "1", optional = true }
 nohash-hasher = "0.2"
 lazy_static = "1"
 openssl = { version = "0.10", optional = true }
-# For reading XML.
-roxmltree = "0.14"
+quick-xml = { version = "0.23", features = ["serialize"] }
 rust_decimal = { version = "1", optional = true }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1"
@@ -102,7 +101,8 @@ fnv = "1"
 heck = "0.4"
 indoc = "1"
 lazy_static = "1"
-quick-xml = "0.23"
+quick-xml = { version = "0.23", features = ["serialize"] }
+serde = { version = "1.0", features = ["derive"] }
 roxmltree = "0.14"
 rayon = "1"
 strum = "0.24"
