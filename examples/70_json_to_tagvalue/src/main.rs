@@ -22,7 +22,7 @@ fn main() {
 
         match field_value {
             FieldOrGroup::Field(s) => {
-                fix_msg_builder.set(field.tag(), s.as_ref());
+                fix_msg_builder.set(field.tag, s.as_ref());
             }
             FieldOrGroup::Group(_g) => {}
         }

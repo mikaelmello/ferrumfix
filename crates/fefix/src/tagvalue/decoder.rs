@@ -44,13 +44,12 @@ where
             tag_lookup: dict
                 .iter_fields()
                 .filter_map(|field| {
-                    let mut fix_type = field.data_type().basetype();
-                    if field.is_num_in_group() {
-                        fix_type = FixDatatype::NumInGroup;
-                    }
-
-                    if fix_type == FixDatatype::Length || fix_type == FixDatatype::NumInGroup {
-                        Some((field.tag().get(), fix_type))
+                    let datatype = field.data_type.name.to_lowercase();
+                    println!("datatype: {}", datatype);
+                    if datatype == "numingroup" {
+                        Some((field.tag.get(), FixDatatype::NumInGroup))
+                    } else if datatype == "length" {
+                        Some((field.tag.get(), FixDatatype::Length))
                     } else {
                         None
                     }

@@ -1,8 +1,7 @@
 use super::*;
+use fnv::{FnvHashMap, FnvHashSet};
 use quick_xml::de::from_str;
 use serde::Deserialize;
-use std::cmp::Ordering;
-use std::collections::{HashMap, HashSet};
 
 #[derive(Debug, Deserialize)]
 struct Fix {
@@ -33,126 +32,77 @@ impl Fix {
         )
     }
 
-    fn sort_components_by_dependency_order(&mut self) {
-        let components_by_name: HashMap<String, Component> = self
+    fn fields_that_start_groups(&self) -> Vec<String> {
+        let mut items = vec![];
+        items.extend_from_slice(&self.header.children);
+        items.extend_from_slice(&self.trailer.children);
+        for c in &self.components.components {
+            items.extend_from_slice(&c.items);
+        }
+        for m in &self.messages.messages {
+            items.extend_from_slice(&m.items);
+        }
+
+        let mut fields = vec![];
+        while let Some(item) = items.pop() {
+            match item {
+                Item::Group { items: i, name, .. } => {
+                    items.extend_from_slice(&i);
+                    fields.push(name);
+                }
+                _ => {}
+            }
+        }
+        fields
+    }
+
+    /// Performs a topological sort over components.
+    fn topologically_sort_components(&mut self) {
+        type ComponentWithDependencies = (Component, Vec<String>);
+
+        let adj_list: FnvHashMap<String, ComponentWithDependencies> = self
             .components
             .components
             .iter()
-            .cloned()
-            .map(|c| (c.name.clone(), c))
-            .collect();
-        let dependencies_by_component_name: HashMap<String, Vec<String>> = components_by_name
-            .iter()
-            .map(|(name, c)| {
+            .map(|c| {
+                let mut dependencies = vec![];
                 let mut items = c.items.clone();
-                let mut dependencies = Vec::new();
                 while let Some(item) = items.pop() {
                     match item {
-                        Item::Field { .. } => (),
+                        Item::Component { name, .. } => dependencies.push(name.clone()),
                         Item::Group { items: i, .. } => items.extend_from_slice(&i),
-                        Item::Component { name, .. } => dependencies.push(name),
+                        Item::Field { .. } => {}
                     }
                 }
-                (name.clone(), dependencies)
+                (c.name.clone(), (c.clone(), dependencies))
             })
             .collect();
 
-        let mut names = HashSet::new();
-        let mut components = vec![];
-        while !self.components.components.is_empty() {
-            let component = self.components.components.swap_remove(0);
-            if dependencies_by_component_name
-                .get(&component.name)
-                .unwrap()
-                .iter()
-                .all(|c_name| names.contains(c_name.as_str()))
-            {
-                names.insert(component.name.clone());
-                components.push(component);
-            } else {
-                self.components.components.push(component);
+        let mut sorted = vec![];
+        let mut visited = FnvHashSet::default();
+        let mut visiting = FnvHashSet::default();
+        let mut queue: Vec<String> = self
+            .components
+            .components
+            .iter()
+            .map(|c| c.name.clone())
+            .collect();
+
+        while let Some(component_name) = queue.pop() {
+            if visiting.contains(&component_name) {
+                sorted.push(adj_list[&component_name].0.clone());
+                visiting.remove(&component_name);
+                visited.insert(component_name);
+            } else if !visited.contains(&component_name) {
+                let dependencies = &adj_list[&component_name].1;
+                visiting.insert(component_name.clone());
+                queue.push(component_name);
+                queue.extend_from_slice(&dependencies);
             }
         }
 
-        self.components.components = components;
+        self.components.components = sorted;
     }
-}
-
-#[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "lowercase")]
-enum Item {
-    Field {
-        name: String,
-        required: char,
-    },
-    Group {
-        name: String,
-        required: char,
-        #[serde(default, rename = "$value")]
-        items: Vec<Item>,
-    },
-    Component {
-        name: String,
-        required: char,
-    },
-}
-
-#[derive(Debug, Clone, Deserialize)]
-struct Fields {
-    #[serde(default, rename = "field")]
-    fields: Vec<Field>,
-}
-
-#[derive(Debug, Deserialize)]
-struct Messages {
-    #[serde(default, rename = "message")]
-    messages: Vec<Message>,
-}
-
-#[derive(Debug, Deserialize)]
-struct Components {
-    #[serde(default, rename = "component")]
-    components: Vec<Component>,
-}
-
-#[derive(Debug, Deserialize)]
-struct Trailer {
-    #[serde(default, rename = "$value")]
-    children: Vec<Item>,
-}
-
-#[derive(Debug, Deserialize)]
-struct Header {
-    #[serde(default, rename = "$value")]
-    children: Vec<Item>,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-struct Component {
-    name: String,
-    #[serde(default, rename = "$value")]
-    items: Vec<Item>,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-struct Field {
-    number: TagU32,
-    name: String,
-    #[serde(rename = "type")]
-    datatype: String,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-struct FieldRef {
-    name: String,
-    required: char,
-}
-
-#[derive(Debug, Deserialize)]
-struct Message {
-    name: String,
-    msgtype: String,
-    msgcat: Option<String>,
 }
 
 /// Attempts to read a QuickFIX-style specification file and convert it into
@@ -170,15 +120,32 @@ pub fn parse_quickfix_xml(xml_document: &str) -> Result<Dictionary, quick_xml::D
     }
 
     // Import fields.
+    let fields_that_start_groups = fix.fields_that_start_groups();
     for f in &fix.fields.fields {
         let datatype = dict.datatype_by_name(&f.datatype).unwrap();
-        let field = types::Field::new(f.name.clone(), f.number, datatype);
+        let mut field = types::Field::new(f.name.clone(), f.number, datatype);
+        if let Some(values) = &f.values {
+            field.value_restrictions = Some(vec![]);
+            for variant in values {
+                field
+                    .value_restrictions
+                    .as_mut()
+                    .unwrap()
+                    .push(types::FieldEnum {
+                        value: variant.name.clone(),
+                        description: variant.description.clone(),
+                    });
+            }
+            if fields_that_start_groups.contains(&f.name) {
+                field.is_group = true;
+            }
+        }
         dict.add_field(field);
     }
 
     // Create a dependency graph of components. This is necessary to import them in the correct
     // order.
-    fix.sort_components_by_dependency_order();
+    fix.topologically_sort_components();
     // Import components.
     for c in fix.components.components {
         println!("component {}", c.name);
@@ -246,4 +213,92 @@ fn convert_items(dict: &Dictionary, items: Vec<Item>) -> Vec<LayoutItem> {
     }
 
     layout
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum Item {
+    Field {
+        name: String,
+        required: char,
+    },
+    Group {
+        name: String,
+        required: char,
+        #[serde(default, rename = "$value")]
+        items: Vec<Item>,
+    },
+    Component {
+        name: String,
+        required: char,
+    },
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct Fields {
+    #[serde(default, rename = "field")]
+    fields: Vec<Field>,
+}
+
+#[derive(Debug, Deserialize)]
+struct Messages {
+    #[serde(default, rename = "message")]
+    messages: Vec<Message>,
+}
+
+#[derive(Debug, Deserialize)]
+struct Components {
+    #[serde(default, rename = "component")]
+    components: Vec<Component>,
+}
+
+#[derive(Debug, Deserialize)]
+struct Trailer {
+    #[serde(default, rename = "$value")]
+    children: Vec<Item>,
+}
+
+#[derive(Debug, Deserialize)]
+struct Header {
+    #[serde(default, rename = "$value")]
+    children: Vec<Item>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct Component {
+    name: String,
+    #[serde(default, rename = "$value")]
+    items: Vec<Item>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct Field {
+    number: TagU32,
+    name: String,
+    #[serde(rename = "type")]
+    datatype: String,
+    #[serde(rename = "value")]
+    values: Option<Vec<FieldEnum>>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct FieldRef {
+    name: String,
+    required: char,
+}
+
+#[derive(Debug, Deserialize)]
+struct Message {
+    name: String,
+    msgtype: String,
+    msgcat: Option<String>,
+    #[serde(default, rename = "$value")]
+    items: Vec<Item>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct FieldEnum {
+    #[serde(default, rename = "enum")]
+    name: String,
+    description: String,
 }

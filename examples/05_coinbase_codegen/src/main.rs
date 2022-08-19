@@ -2,6 +2,7 @@
 #[rustfmt::skip]
 mod gdax;
 
+use fefix::dict::parse_quickfix_xml;
 use fefix::prelude::*;
 use fefix::tagvalue::{Config, Decoder};
 
@@ -22,7 +23,7 @@ fn main() {
 }
 
 fn fix_decoder() -> Decoder<Config> {
-    let fix_dictionary = Dictionary::from_quickfix_spec(QUICKFIX_SPEC).unwrap();
+    let fix_dictionary = parse_quickfix_xml(QUICKFIX_SPEC).unwrap();
     Decoder::<Config>::new(fix_dictionary)
 }
 

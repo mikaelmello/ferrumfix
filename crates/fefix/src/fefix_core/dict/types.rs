@@ -1,7 +1,5 @@
+use super::TagU32;
 use std::rc::Rc;
-
-use super::FixDatatype;
-use super::{Dictionary, TagU32};
 
 pub type InternalId = u32;
 
@@ -125,6 +123,7 @@ pub struct Field {
     /// the referenced data field
     pub associated_data_tag: Option<Rc<Field>>,
     pub value_restrictions: Option<Vec<FieldEnum>>,
+    pub is_group: bool,
     /// Abbreviated form of the Name, typically to specify the element name when
     /// the field is used in an XML message. Can be overridden by BaseCategory /
     /// BaseCategoryAbbrName.
@@ -147,6 +146,7 @@ impl Field {
             data_type,
             associated_data_tag: None,
             value_restrictions: None,
+            is_group: false,
             abbr_name: None,
             base_category_id: None,
             base_category_abbr_name: None,

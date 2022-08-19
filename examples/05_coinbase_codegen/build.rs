@@ -1,4 +1,5 @@
 use fefix::codegen;
+use fefix::dict::parse_quickfix_xml;
 use fefix::Dictionary;
 use std::fs::File;
 use std::io;
@@ -24,7 +25,7 @@ fn coinbase_fix_dictionary() -> io::Result<Dictionary> {
         let path = project_root().join("src").join("coinbase_quickfix.xml");
         std::fs::read_to_string(path)?
     };
-    Ok(Dictionary::from_quickfix_spec(quickfix_spec).expect("Invalid specs."))
+    Ok(parse_quickfix_xml(quickfix_spec.as_str()).expect("Invalid specs."))
 }
 
 fn project_root() -> PathBuf {

@@ -9,8 +9,8 @@ mod types;
 
 use super::TagU32;
 use fnv::FnvHashMap;
+use std::rc::Rc;
 use std::sync::Arc;
-use std::{fmt, rc::Rc};
 
 pub use datatype::FixDatatype;
 pub use quickfix_parser::parse_quickfix_xml;
@@ -356,11 +356,11 @@ mod test {
     fn fix44_quickfix_is_ok() {
         let dict = Dictionary::fix44();
         let msg_heartbeat = dict.message_by_name("Heartbeat").unwrap();
-        assert_eq!(msg_heartbeat.msg_type(), "0");
-        assert_eq!(msg_heartbeat.name(), "Heartbeat".to_string());
-        assert!(msg_heartbeat.layout().any(|c| {
-            if let LayoutItemKind::Field(f) = c.kind() {
-                f.name() == "TestReqID"
+        assert_eq!(msg_heartbeat.msg_type, "0");
+        assert_eq!(msg_heartbeat.name, "Heartbeat".to_string());
+        assert!(msg_heartbeat.layout_items.iter().any(|c| {
+            if let LayoutItemKind::Field(f) = &c.kind {
+                f.name == "TestReqID"
             } else {
                 false
             }
@@ -373,7 +373,7 @@ mod test {
             let datatypes_count = dict.iter_datatypes().count();
             let mut datatypes = HashSet::new();
             for field in dict.iter_fields() {
-                datatypes.insert(field.data_type().name().to_string());
+                datatypes.insert(field.data_type.name.clone());
             }
             assert_eq!(datatypes_count, datatypes.len());
         }
@@ -399,7 +399,7 @@ mod test {
     fn fix44_field_28_has_three_variants() {
         let dict = Dictionary::fix44();
         let field_28 = dict.field_by_tag(28).unwrap();
-        assert_eq!(field_28.name(), "IOITransType");
+        assert_eq!(field_28.name, "IOITransType");
         assert_eq!(field_28.enums().unwrap().count(), 3);
     }
 
@@ -407,7 +407,7 @@ mod test {
     fn fix44_field_36_has_no_variants() {
         let dict = Dictionary::fix44();
         let field_36 = dict.field_by_tag(36).unwrap();
-        assert_eq!(field_36.name(), "NewSeqNo");
+        assert_eq!(field_36.name, "NewSeqNo");
         assert!(field_36.enums().is_none());
     }
 
@@ -415,8 +415,8 @@ mod test {
     fn fix44_field_167_has_eucorp_variant() {
         let dict = Dictionary::fix44();
         let field_167 = dict.field_by_tag(167).unwrap();
-        assert_eq!(field_167.name(), "SecurityType");
-        assert!(field_167.enums().unwrap().any(|e| e.value() == "EUCORP"));
+        assert_eq!(field_167.name, "SecurityType");
+        assert!(field_167.enums().unwrap().any(|e| e.value == "EUCORP"));
     }
 
     const INVALID_QUICKFIX_SPECS: &[&str] = &[
@@ -434,7 +434,7 @@ mod test {
     #[test]
     fn invalid_quickfix_specs() {
         for spec in INVALID_QUICKFIX_SPECS.iter() {
-            let dict = Dictionary::from_quickfix_spec(spec);
+            let dict = parse_quickfix_xml(spec);
             assert!(dict.is_err(), "{}", spec);
         }
     }
