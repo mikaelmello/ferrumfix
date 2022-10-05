@@ -1374,7 +1374,7 @@ struct MessageData {
 
 /// A [`Message`] is a unit of information sent on the wire between
 /// counterparties. Every [`Message`] is composed of fields and/or components.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Message<'a>(&'a Dictionary, &'a MessageData);
 
 impl<'a> Message<'a> {

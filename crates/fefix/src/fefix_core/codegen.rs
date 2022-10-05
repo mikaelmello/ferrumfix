@@ -2,11 +2,19 @@
 
 use super::{dict, TagU32};
 use fnv::FnvHashSet;
-use heck::{ToPascalCase, ToShoutySnakeCase};
+use heck::{ToPascalCase, ToShoutySnakeCase, ToSnakeCase};
 use indoc::indoc;
-use std::marker::PhantomData;
+use std::process::Command;
+use std::{marker::PhantomData, path::Path};
 
 const FEFIX_VERSION: &str = env!("CARGO_PKG_VERSION");
+
+fn rustfmt_file(s: &Path) -> std::io::Result<()> {
+    Command::new("rustfmt")
+        .args([s.to_str().unwrap()])
+        .status()?;
+    Ok(())
+}
 
 /// Creates a [`String`] that contains a multiline Rust "Doc" comment explaining
 /// that all subsequent code was automatically generated.
@@ -183,6 +191,60 @@ pub fn codegen_field_definition_struct(
     gen_field_definition_with_hashsets(fix_dictionary, &header, &trailer, field)
 }
 
+pub fn codegen_message_field(
+    _fix_dictionary: dict::Dictionary,
+    _msg: dict::Message,
+    field: dict::Field,
+) -> String {
+    let identifier = field.name().to_snake_case();
+
+    format!(
+        r#"
+            /// Field `{field_name}`.
+            {identifier}: Option<{field_type}>,
+            "#,
+        field_name = field.name(),
+        identifier = identifier,
+        field_type = "Vec<u8>"
+    )
+}
+
+pub fn codegen_message_definition_struct(
+    fix_dictionary: dict::Dictionary,
+    msg: dict::Message,
+) -> String {
+    let fields = msg
+        .clone()
+        .layout()
+        .map(|layout_item| match layout_item.kind() {
+            dict::LayoutItemKind::Component(c) => None,      // TODO
+            dict::LayoutItemKind::Group(f, members) => None, // TODO
+            dict::LayoutItemKind::Field(f) => Some(codegen_message_field(
+                fix_dictionary.clone(),
+                msg.clone(),
+                f,
+            )),
+        })
+        .filter_map(|opt| opt)
+        .collect::<Vec<String>>()
+        .join("\n");
+
+    format!(
+        indoc!(
+            r#"
+                /// {doc}
+                #[derive(Debug)]
+                pub struct Message{identifier} {{
+                    {fields}
+                }}
+            "#
+        ),
+        doc = "TODO",
+        identifier = msg.name().to_pascal_case(),
+        fields = fields,
+    )
+}
+
 /// Generates `const` implementors of
 /// [`IsFieldDefinition`](super::dict::IsFieldDefinition).
 ///
@@ -209,6 +271,11 @@ pub fn gen_definitions(fix_dictionary: dict::Dictionary, settings: &Settings) ->
         .map(|field| codegen_field_definition_struct(fix_dictionary.clone(), field))
         .collect::<Vec<String>>()
         .join("\n");
+    let message_defs = fix_dictionary
+        .iter_messages()
+        .map(|msg| codegen_message_definition_struct(fix_dictionary.clone(), msg))
+        .collect::<Vec<String>>()
+        .join("\n");
     let top_comment = onixs_link_to_dictionary(fix_dictionary.get_version()).unwrap_or_default();
     let code = format!(
         indoc!(
@@ -224,12 +291,16 @@ pub fn gen_definitions(fix_dictionary: dict::Dictionary, settings: &Settings) ->
 
             {enum_definitions}
 
-            {field_defs}"#
+            {field_defs}
+            
+            {message_defs}
+            "#
         ),
         notice = generated_code_notice(),
         top_comment = top_comment,
         enum_definitions = enums,
         field_defs = field_defs,
+        message_defs = message_defs,
         fefix_path = settings.fefix_crate_name,
     );
     code
